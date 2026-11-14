@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Live Chat Overlay</title>
+<!--
+  Overlay page for vMix (Web Browser input) / OBS (browser source).
+  Hosted on GitHub Pages; load it as:  https://<user>.github.io/<repo>/#SESSIONID
+  It renders exactly what the extension sends (same HTML + youtube.css as the
+  original aaronpk overlay); only the relay server is Social Stream Ninja.
+  NOTE: youtube.css here is a copy of the extension's youtube.css -- re-copy
+  and re-upload it whenever the extension's styling changes.
+-->
+<link rel="stylesheet" href="youtube.css">
+<script src="jquery.js"></script>
+<style>
+  /* Never black: transparent unless the user explicitly picked a color */
+  :root { --keyer-bg-color: transparent; }
+  html, body { background: transparent !important; margin: 0; overflow: hidden; }
+</style>
+</head>
+<body>
+
+<highlight-chat></highlight-chat>
+
+<script>
+var RELAY_URL = "wss://io.socialstream.ninja";
+var LISTEN_CHANNEL = 2; // the extension publishes on channel 2
+var sessionID = decodeURIComponent(window.location.hash.replace("#", ""));
+var socket = null;
+var reconnectDelay = 0;
+
+function connect() {
+  if(!sessionID) {
+    console.error("[overlay] no session ID: add #SESSIONID to the end of the URL");
+    return;
+  }
+  socket = new WebSocket(RELAY_URL);
+  socket.onopen = function() {
+    reconnectDelay = 0;
+    socket.send(JSON.stringify({ join: sessionID, in: LISTEN_CHANNEL, out: LISTEN_CHANNEL + 1 }));
+  };
+  socket.onmessage = function(event) {
+    var data;
+    try { data = JSON.parse(event.data); } catch(e) { return; }
+
+    // HTTP POST deliveries carry a "get" id and wait for a reply; answer
+    // right away so the sender's request doesn't hang for ~6 seconds.
+    if(data && data.get) {
+      socket.send(JSON.stringify({ callback: { get: data.get, result: true } }));
+    }
+
+    if(!data || data.action !== "lco" || typeof data.value !== "string") return;
+    var msg;
+    try { msg = JSON.parse(data.value); } catch(e) { return; }
+    onMessage(msg);
+  };
+  socket.onclose = function() {
+    // Reconnect: 1s at first, doubling up to 15s while the relay is unreachable
+    reconnectDelay = Math.min(reconnectDelay ? reconnectDelay * 2 : 1000, 15000);
+    setTimeout(connect, reconnectDelay);
+  };
+  socket.onerror = function() { /* onclose handles the reconnect */ };
+}
+
+function onMessage(data) {
+  if(data.config) {
+    loadConfig(data.config);
+  }
+  switch(data.command) {
+    case "show":
+      hideMessageImmediately();
+      if(data.html) { showMessage(data.html); }
+      break;
+    case "hide":
+      hideMessage();
+      break;
+  }
+}
+
+// The relay is public: anyone who learns the session ID can push to it.
+// Strip anything executable so the worst they can do is show text/images.
+var BLOCKED_TAGS = ["SCRIPT","IFRAME","OBJECT","EMBED","LINK","META","STYLE","BASE","FORM","INPUT","BUTTON","TEXTAREA","SELECT","SVG","MATH","FRAME","FRAMESET","AUDIO","VIDEO","SOURCE","TEMPLATE"];
+function sanitizeHTML(html) {
+  var tpl = document.createElement("template");
+  tpl.innerHTML = String(html);
+  var all = tpl.content.querySelectorAll("*");
+  for (var i = 0; i < all.length; i++) {
+    var el = all[i];
+    if (BLOCKED_TAGS.indexOf(el.tagName.toUpperCase()) !== -1) {
+      el.remove();
+      continue;
+    }
+    for (var j = el.attributes.length - 1; j >= 0; j--) {
+      var name = el.attributes[j].name.toLowerCase();
+      var value = el.attributes[j].value;
+      var isURLAttr = (name === "src" || name === "href" || name === "srcset" || name === "xlink:href");
+      if (name.indexOf("on") === 0 ||
+          (isURLAttr && !/^(https?:|data:image\/)/i.test(value.trim())) ||
+          (name === "style" && /url\s*\(|expression\s*\(/i.test(value))) {
+        el.removeAttribute(el.attributes[j].name);
+      }
+    }
+  }
+  return tpl.innerHTML;
+}
+
+function showMessage(html) {
+  html = sanitizeHTML(html);
+  $("highlight-chat").append(html)
+  .delay(10).queue(function(next){
+    $(".hl-c-cont").removeClass("fadeout");
+    next();
+  });
+}
+
+function hideMessageImmediately() {
+  $(".hl-c-cont").stop(true).remove();
+}
+
+function hideMessage() {
+  $(".hl-c-cont").addClass("fadeout").delay(300).queue(function(){
+    $(".hl-c-cont").remove().dequeue();
+  });
+}
+
+function loadConfig(config) {
+  var root = document.documentElement;
+  function setOrClear(property, value) {
+    if(value) { root.style.setProperty(property, value); }
+    else { root.style.removeProperty(property); }
+  }
+  // Empty color -> transparent (the stylesheet default here), never black
+  setOrClear("--keyer-bg-color", config.color);
+  setOrClear("--author-bg-color", config.authorBackgroundColor);
+  setOrClear("--author-avatar-border-color", config.authorAvatarBorderColor || config.authorBackgroundColor);
+  setOrClear("--author-avatar-overlay-opacity", config.authorAvatarOverlayOpacity);
+  setOrClear("--comment-bg-color", config.commentBackgroundColor);
+  setOrClear("--author-color", config.authorColor);
+  setOrClear("--comment-color", config.commentColor);
+  setOrClear("--font-family", config.fontFamily);
+  setOrClear("--comment-scale", config.scale);
+  setOrClear("--comment-area-bottom", config.commentBottom);
+  setOrClear("--comment-area-height", config.commentHeight);
+  setOrClear("--comment-area-size-offset", config.sizeOffset);
+}
+
+window.addEventListener("hashchange", function() {
+  sessionID = decodeURIComponent(window.location.hash.replace("#", ""));
+  if(socket) { socket.close(); } else { connect(); }
+});
+
+connect();
+</script>
+</body>
+</html>
